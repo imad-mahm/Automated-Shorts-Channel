@@ -1,0 +1,61 @@
+name: Daily mythology short
+
+on:
+  schedule:
+    - cron: '0 10 * * *'   # 10:00 AM UTC daily
+  workflow_dispatch:         # also allow manual trigger from GitHub UI
+    inputs:
+      topic:
+        description: 'Optional: specific topic for this run (blank = use queue, else random)'
+        required: false
+        default: ''
+
+# Needed so the run can commit the consumed topic back to the queue file.
+permissions:
+  contents: write
+
+jobs:
+  generate-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          # Empty for scheduled runs; set from the manual-dispatch input otherwise.
+          TOPIC: ${{ github.event.inputs.topic }}
+        run: python main.py
+
+      - name: Commit consumed topic queue
+        # Only on success: main.py removes a queued topic after a successful
+        # upload, so we persist that change back to the repo.
+        if: success()
+        run: |
+          if ! git diff --quiet -- topics_queue.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add topics_queue.json
+            git commit -m "chore: consume topic from queue [skip ci]"
+            git push
+          else
+            echo "No queue change to commit."
+          fi
