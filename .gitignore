@@ -1,0 +1,18 @@
+# Secrets and credentials
+.env
+client_secret.json
+
+# Generated media / working files
+output/
+*.mp4
+*.mp3
+
+# Keep royalty-free music tracks tracked despite the *.mp3 rule above
+!assets/music/*.mp3
+
+# Python
+__pycache__/
+*.pyc
+
+# OS junk
+.DS_Store
