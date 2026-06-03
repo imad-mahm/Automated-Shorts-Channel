@@ -4,7 +4,7 @@ google-genai>=1.0.0
 # Text-to-speech and word-level subtitles
 edge-tts>=6.1.0
 
-# HTTP downloads (Pollinations images)
+# HTTP calls (Cloudflare Workers AI image generation)
 requests>=2.31.0
 
 # YouTube Data API v3 + OAuth2

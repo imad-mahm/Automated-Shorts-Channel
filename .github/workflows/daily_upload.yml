@@ -2,13 +2,13 @@ name: Daily mythology short
 
 on:
   schedule:
-    - cron: '0 10 * * *'   # 10:00 AM UTC daily
-  workflow_dispatch:         # also allow manual trigger from GitHub UI
+    - cron: "0 5 * * 0" # weekly, Sundays at 05:00 UTC (true 7-day cycle)
+  workflow_dispatch: # also allow manual trigger from GitHub UI
     inputs:
       topic:
-        description: 'Optional: specific topic for this run (blank = use queue, else random)'
+        description: "Optional: specific topic for this run (blank = use queue, else random)"
         required: false
-        default: ''
+        default: ""
 
 # Needed so the run can commit the consumed topic back to the queue file.
 permissions:
@@ -24,8 +24,8 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: "3.11"
+          cache: "pip"
 
       - name: Install system dependencies
         run: |
@@ -41,6 +41,8 @@ jobs:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           # Empty for scheduled runs; set from the manual-dispatch input otherwise.
           TOPIC: ${{ github.event.inputs.topic }}
         run: python main.py

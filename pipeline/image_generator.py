@@ -1,16 +1,22 @@
 """
 Image generation stage.
 
-Generates one image per scene using Pollinations.ai's free, key-less,
-URL-based image API (Flux model). Images are saved as portrait 1080x1920 JPGs
-ready to feed into the video assembler.
+Generates one image per scene using Cloudflare Workers AI's FLUX.1-schnell
+model. The model is free (well within Cloudflare's daily free allowance),
+Apache-2.0 licensed (safe for commercial/monetized output), and called over a
+simple authenticated REST endpoint.
+
+FLUX.1-schnell returns a 1024x1024 image as base64-encoded JPEG inside a JSON
+envelope. We decode and save it as-is; the video assembler later scales and
+center-crops every image to portrait 1080x1920, so the source dimensions here
+don't need to match.
 """
 
+import base64
+import binascii
 import logging
-import random
 import time
 from pathlib import Path
-from urllib.parse import quote
 
 import requests
 
@@ -18,52 +24,71 @@ import config
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://image.pollinations.ai/prompt/"
+# Cloudflare Workers AI REST endpoint for the FLUX.1-schnell text-to-image model.
+MODEL = "@cf/black-forest-labs/flux-1-schnell"
+API_URL = (
+    "https://api.cloudflare.com/client/v4/accounts/"
+    "{account_id}/ai/run/" + MODEL
+)
 
-REQUEST_TIMEOUT = 60  # seconds, per the spec
-DELAY_BETWEEN_REQUESTS = 2  # seconds, to be polite to the free service
+REQUEST_TIMEOUT = 60  # seconds
+DELAY_BETWEEN_REQUESTS = 2  # seconds, to stay polite under the free tier
 MAX_RETRIES = 3
+# schnell supports 1-8 diffusion steps; 8 is the max quality the model allows.
+STEPS = 8
 
 
 def _download_one(prompt: str, dest: Path) -> None:
     """
-    Download a single Pollinations image to `dest`, with retry/backoff.
+    Generate a single image with Cloudflare FLUX.1-schnell and save it to `dest`.
 
     Inputs:
         prompt:  the image prompt text.
         dest:    pathlib.Path where the JPG should be written.
     Output:  None.
-    Raises:  RuntimeError if all retry attempts fail.
+    Raises:
+        RuntimeError on a fatal auth/config error (no retry), or after all retry
+        attempts are exhausted for transient errors.
     """
-    # URL-encode the prompt for the path segment; quote with empty safe set so
-    # slashes inside the prompt don't break the route.
-    encoded = quote(prompt, safe="")
-    params = {
-        "width": 1080,
-        "height": 1920,
-        "model": "flux",
-        "nologo": "true",
-        "enhance": "true",
-        "seed": random.randint(1, 1_000_000),
+    url = API_URL.format(account_id=config.CLOUDFLARE_ACCOUNT_ID)
+    headers = {
+        "Authorization": f"Bearer {config.CLOUDFLARE_API_TOKEN}",
+        "Content-Type": "application/json",
     }
-    url = BASE_URL + encoded
+    payload = {"prompt": prompt, "steps": STEPS}
 
     last_error: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             logger.debug("Requesting image (attempt %d): %s", attempt, dest.name)
-            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            resp = requests.post(
+                url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT
+            )
+
+            # Auth/permission failures are config problems, not transient — fail
+            # fast with an actionable message instead of burning retries.
+            if resp.status_code in (401, 403):
+                raise RuntimeError(
+                    "Cloudflare rejected the request "
+                    f"(HTTP {resp.status_code}). Check that CLOUDFLARE_ACCOUNT_ID "
+                    "and CLOUDFLARE_API_TOKEN are correct and the token has the "
+                    "'Workers AI' permission."
+                )
+
             resp.raise_for_status()
-            if not resp.content:
-                raise ValueError("Empty image response body")
-            dest.write_bytes(resp.content)
-            logger.info("Saved %s (%d bytes)", dest.name, len(resp.content))
+            image_bytes = _extract_image_bytes(resp)
+            dest.write_bytes(image_bytes)
+            logger.info("Saved %s (%d bytes)", dest.name, len(image_bytes))
             return
+        except RuntimeError:
+            # Fatal (auth/config) errors are raised as RuntimeError above — don't
+            # retry them, let them propagate immediately.
+            raise
         except Exception as exc:  # noqa: BLE001 - retry on any network/IO error
             last_error = exc
             backoff = 2 ** attempt  # exponential: 2s, 4s, 8s
             logger.warning(
-                "Image download failed for %s (attempt %d/%d): %s — retrying in %ds",
+                "Image generation failed for %s (attempt %d/%d): %s — retrying in %ds",
                 dest.name,
                 attempt,
                 MAX_RETRIES,
@@ -73,7 +98,40 @@ def _download_one(prompt: str, dest: Path) -> None:
             if attempt < MAX_RETRIES:
                 time.sleep(backoff)
 
-    raise RuntimeError(f"Failed to download image {dest.name}: {last_error}")
+    raise RuntimeError(f"Failed to generate image {dest.name}: {last_error}")
+
+
+def _extract_image_bytes(resp: requests.Response) -> bytes:
+    """
+    Pull the decoded image bytes out of a Cloudflare Workers AI JSON response.
+
+    FLUX.1-schnell responds with:
+        {"result": {"image": "<base64 jpeg>"}, "success": true, ...}
+
+    Inputs:  resp - the requests.Response from the Workers AI endpoint.
+    Output:  raw JPEG bytes.
+    Raises:  ValueError if the envelope is malformed or the image is empty.
+    """
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise ValueError(f"Cloudflare response was not JSON: {exc}") from exc
+
+    if not body.get("success", False):
+        raise ValueError(f"Cloudflare reported failure: {body.get('errors')}")
+
+    b64 = (body.get("result") or {}).get("image")
+    if not b64:
+        raise ValueError("Cloudflare response contained no image data")
+
+    try:
+        image_bytes = base64.b64decode(b64)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"Could not base64-decode image: {exc}") from exc
+
+    if not image_bytes:
+        raise ValueError("Decoded image was empty")
+    return image_bytes
 
 
 def generate_images(scenes: list[dict]) -> list[Path]:
@@ -99,7 +157,7 @@ def generate_images(scenes: list[dict]) -> list[Path]:
         _download_one(prompt, dest)
         paths.append(dest)
 
-        # Be polite to the free service between requests (but not after the last).
+        # Stay polite to the free service between requests (but not after the last).
         if index < len(scenes):
             time.sleep(DELAY_BETWEEN_REQUESTS)
 

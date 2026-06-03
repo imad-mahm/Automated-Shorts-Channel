@@ -30,6 +30,10 @@ YOUTUBE_CLIENT_ID = os.environ.get("YOUTUBE_CLIENT_ID")
 YOUTUBE_CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET")
 YOUTUBE_REFRESH_TOKEN = os.environ.get("YOUTUBE_REFRESH_TOKEN")
 
+# Cloudflare Workers AI — free FLUX.1-schnell image generation.
+CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
+
 
 # --------------------------------------------------------------------------- #
 # Paths
@@ -88,6 +92,8 @@ _REQUIRED_VARS = (
     "YOUTUBE_CLIENT_ID",
     "YOUTUBE_CLIENT_SECRET",
     "YOUTUBE_REFRESH_TOKEN",
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_API_TOKEN",
 )
 
 
