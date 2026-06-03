@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mythology Shorts — Topic Queue</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --line: #262b36;
+      --text: #e7e9ee; --muted: #9aa3b2; --accent: #7c5cff; --danger: #ff5c72;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 40px 20px 80px; }
+    h1 { font-size: 1.5rem; margin: 0 0 4px; }
+    .sub { color: var(--muted); margin: 0 0 28px; font-size: .95rem; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 18px; }
+    .msg { background: #1d2a1f; border: 1px solid #2f5135; color: #b8f0c4; padding: 10px 14px; border-radius: 10px; margin-bottom: 18px; font-size: .9rem; }
+    form.inline { display: flex; gap: 10px; }
+    input[type=text] {
+      flex: 1; background: #0e1117; border: 1px solid var(--line); color: var(--text);
+      padding: 11px 13px; border-radius: 10px; font-size: .95rem;
+    }
+    input[type=text]:focus { outline: none; border-color: var(--accent); }
+    button {
+      border: 0; border-radius: 10px; padding: 11px 16px; font-size: .9rem; font-weight: 600;
+      color: #fff; background: var(--accent); cursor: pointer;
+    }
+    button.secondary { background: #2a2f3a; }
+    button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); padding: 6px 10px; }
+    button.danger { background: transparent; color: var(--danger); border: 1px solid #3a2730; padding: 6px 10px; }
+    button:hover { filter: brightness(1.08); }
+    ol { list-style: none; counter-reset: q; margin: 0; padding: 0; }
+    li {
+      counter-increment: q; display: flex; align-items: center; gap: 12px;
+      padding: 12px 6px; border-bottom: 1px solid var(--line);
+    }
+    li:last-child { border-bottom: 0; }
+    li .num { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 22px; }
+    li .num::before { content: counter(q); }
+    li .topic { flex: 1; word-break: break-word; }
+    li .controls { display: flex; gap: 6px; }
+    .empty { color: var(--muted); text-align: center; padding: 22px 0; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    .label { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+    .hint { color: var(--muted); font-size: .82rem; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🏛️ Topic Queue</h1>
+    <p class="sub">Topics are used by the daily run in order, top first. Empty queue → a random myth is chosen.</p>
+
+    {% if message %}<div class="msg">{{ message }}</div>{% endif %}
+
+    <div class="panel">
+      <p class="label">Add a topic</p>
+      <form class="inline" action="{{ url_for('add') }}" method="post">
+        <input type="text" name="topic" placeholder="e.g. Norse: Fenrir breaking free at Ragnarök" autofocus required />
+        <button type="submit">Add</button>
+      </form>
+      <p class="hint">Be as broad or specific as you like — "Egyptian underworld" or "the exact story of Anubis weighing the heart".</p>
+    </div>
+
+    <div class="panel">
+      <p class="label">Queue ({{ topics|length }})</p>
+      {% if topics %}
+      <ol>
+        {% for topic in topics %}
+        <li>
+          <span class="num"></span>
+          <span class="topic">{{ topic }}</span>
+          <span class="controls">
+            <form action="{{ url_for('move') }}" method="post">
+              <input type="hidden" name="index" value="{{ loop.index0 }}" />
+              <input type="hidden" name="delta" value="-1" />
+              <button class="ghost" type="submit" title="Move up" {% if loop.first %}disabled{% endif %}>↑</button>
+            </form>
+            <form action="{{ url_for('move') }}" method="post">
+              <input type="hidden" name="index" value="{{ loop.index0 }}" />
+              <input type="hidden" name="delta" value="1" />
+              <button class="ghost" type="submit" title="Move down" {% if loop.last %}disabled{% endif %}>↓</button>
+            </form>
+            <form action="{{ url_for('remove') }}" method="post">
+              <input type="hidden" name="index" value="{{ loop.index0 }}" />
+              <button class="danger" type="submit" title="Remove">✕</button>
+            </form>
+          </span>
+        </li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      <p class="empty">Queue is empty — the next run will pick a random myth.</p>
+      {% endif %}
+
+      <div class="row">
+        <form action="{{ url_for('push') }}" method="post">
+          <button class="secondary" type="submit">⤴ Save &amp; push to GitHub</button>
+        </form>
+      </div>
+      <p class="hint">Pushing commits <code>topics_queue.json</code> so the scheduled GitHub Action uses your latest queue.</p>
+    </div>
+
+    <div class="panel">
+      <p class="label">Generate now</p>
+      {% if can_trigger %}
+      <form class="inline" action="{{ url_for('trigger') }}" method="post">
+        <input type="text" name="topic" placeholder="Optional one-off topic (blank = use queue / random)" />
+        <button type="submit">▶ Run workflow</button>
+      </form>
+      <p class="hint">Triggers <code>{{ github_repo }}</code> via the GitHub API.</p>
+      {% else %}
+      <p class="empty">Set <code>GITHUB_REPO</code> and <code>GITHUB_TOKEN</code> env vars to enable on-demand runs from here.</p>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

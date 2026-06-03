@@ -1,0 +1,4 @@
+# Dependencies for the local topic-queue web interface only.
+# The main pipeline / GitHub Action does NOT need these.
+flask>=3.0.0
+requests>=2.31.0
