@@ -108,10 +108,18 @@ must contain 8 objects):
 - Each scene illustrates a different beat of the story, in chronological order,
   so the 8 images form a visual sequence.
 - Include a vivid subject description tied to that beat of the story.
-- Include this exact art style phrase in every image_prompt: "vibrant anime art
-  style, cel-shaded, dramatic anime key visual, bold clean linework, expressive
-  characters, cinematic anime lighting".
+- Include this exact art style phrase in every image_prompt: "flat 2D
+  hand-drawn anime illustration in the style of a modern high-budget anime
+  film, clean cel shading, bold crisp linework, vibrant flat colors, expressive
+  2D characters with correct anatomy and detailed faces, dramatic cinematic
+  anime lighting, sharp and clean, official anime key visual — purely 2D, hand
+  drawn, NOT 3D, not a CGI render, not photorealistic, not a cartoon".
 - Convey mood/atmosphere.
+- Keep each composition simple and readable to avoid drawing errors: favor one
+  or two clear focal characters (or a striking landscape/object), shown at
+  medium or wide distance. AVOID large crowds, many small background figures,
+  and tight close-ups of hands or intertwined fingers — these produce deformed
+  results.
 - End each with: "portrait 9:16 aspect ratio, no text, no watermarks".
 """
     if retry_hint:
