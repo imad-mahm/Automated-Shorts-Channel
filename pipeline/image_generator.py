@@ -36,6 +36,43 @@ DELAY_BETWEEN_REQUESTS = 2  # seconds, to stay polite under the free tier
 MAX_RETRIES = 3
 # schnell supports 1-8 diffusion steps; 8 is the max quality the model allows.
 STEPS = 8
+# flux-1-schnell rejects any prompt longer than this with HTTP 400
+# ("Length of '/prompt' must be <= 2048"). Gemini occasionally writes a longer
+# prompt for a single scene, so we cap before sending.
+MAX_PROMPT_CHARS = 2048
+
+
+def _truncate_prompt(prompt: str) -> str:
+    """
+    Cap a prompt at Cloudflare's 2048-character limit.
+
+    Trims back to the last word boundary so we don't cut mid-word, and strips any
+    trailing separators left behind. Returns the prompt unchanged if it already
+    fits.
+    """
+    if len(prompt) <= MAX_PROMPT_CHARS:
+        return prompt
+    truncated = prompt[:MAX_PROMPT_CHARS]
+    cut = truncated.rfind(" ")
+    if cut > 0:
+        truncated = truncated[:cut]
+    return truncated.rstrip(" ,;")
+
+
+def _cloudflare_error_detail(resp: requests.Response) -> str:
+    """
+    Extract a human-readable reason from a non-2xx Cloudflare response.
+
+    Cloudflare returns {"errors": [{"message": "...", "code": ...}], ...} on
+    failure. Fall back to the raw (truncated) body if it isn't the expected JSON.
+    """
+    try:
+        errors = resp.json().get("errors")
+        if errors:
+            return "; ".join(e.get("message", str(e)) for e in errors)
+    except ValueError:
+        pass
+    return resp.text[:300]
 
 
 def _download_one(prompt: str, dest: Path) -> None:
@@ -55,6 +92,16 @@ def _download_one(prompt: str, dest: Path) -> None:
         "Authorization": f"Bearer {config.CLOUDFLARE_API_TOKEN}",
         "Content-Type": "application/json",
     }
+
+    if len(prompt) > MAX_PROMPT_CHARS:
+        logger.warning(
+            "Prompt for %s is %d chars; truncating to Cloudflare's %d-char limit",
+            dest.name,
+            len(prompt),
+            MAX_PROMPT_CHARS,
+        )
+        prompt = _truncate_prompt(prompt)
+
     payload = {"prompt": prompt, "steps": STEPS}
 
     last_error: Exception | None = None
@@ -73,6 +120,15 @@ def _download_one(prompt: str, dest: Path) -> None:
                     f"(HTTP {resp.status_code}). Check that CLOUDFLARE_ACCOUNT_ID "
                     "and CLOUDFLARE_API_TOKEN are correct and the token has the "
                     "'Workers AI' permission."
+                )
+
+            # A 400 is a deterministic bad-request (e.g. a rejected prompt) — it
+            # will never succeed on retry, so surface Cloudflare's own reason and
+            # fail fast instead of burning three attempts.
+            if resp.status_code == 400:
+                raise RuntimeError(
+                    f"Cloudflare rejected the prompt for {dest.name} (HTTP 400): "
+                    f"{_cloudflare_error_detail(resp)}"
                 )
 
             resp.raise_for_status()
