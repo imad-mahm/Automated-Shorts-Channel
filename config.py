@@ -30,9 +30,10 @@ YOUTUBE_CLIENT_ID = os.environ.get("YOUTUBE_CLIENT_ID")
 YOUTUBE_CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET")
 YOUTUBE_REFRESH_TOKEN = os.environ.get("YOUTUBE_REFRESH_TOKEN")
 
-# Cloudflare Workers AI — free FLUX.1-schnell image generation.
-CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
-CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
+# Pollinations.ai — free FLUX image generation (no key required). The optional
+# token raises rate limits / guarantees no-logo output on the newer tiers; the
+# pipeline works without it, so it is NOT a required variable.
+POLLINATIONS_API_TOKEN = os.environ.get("POLLINATIONS_API_TOKEN")
 
 
 # --------------------------------------------------------------------------- #
@@ -92,8 +93,6 @@ _REQUIRED_VARS = (
     "YOUTUBE_CLIENT_ID",
     "YOUTUBE_CLIENT_SECRET",
     "YOUTUBE_REFRESH_TOKEN",
-    "CLOUDFLARE_ACCOUNT_ID",
-    "CLOUDFLARE_API_TOKEN",
 )
 
 

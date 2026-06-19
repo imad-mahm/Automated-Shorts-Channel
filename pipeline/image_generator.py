@@ -1,21 +1,22 @@
 """
 Image generation stage.
 
-Generates one image per scene using Cloudflare Workers AI's FLUX.1-schnell
-model. The model is free (well within Cloudflare's daily free allowance),
-Apache-2.0 licensed (safe for commercial/monetized output), and called over a
-simple authenticated REST endpoint.
+Generates one image per scene using Pollinations.ai's free FLUX image endpoint.
+Pollinations needs no API key, imposes no daily quota, and serves images at
+native portrait resolution (1080x1920) — so there is no account/token to manage
+and the output already matches the 9:16 video frame (the assembler still scales/
+crops defensively, but no longer has to discard half of a square image).
 
-FLUX.1-schnell returns a 1024x1024 image as base64-encoded JPEG inside a JSON
-envelope. We decode and save it as-is; the video assembler later scales and
-center-crops every image to portrait 1080x1920, so the source dimensions here
-don't need to match.
+The endpoint is a simple GET:
+    https://image.pollinations.ai/prompt/<url-encoded prompt>
+        ?width=1080&height=1920&model=flux&nologo=true&seed=<n>
+and returns the raw image bytes (JPEG) directly in the response body.
 """
 
-import base64
-import binascii
 import logging
+import random
 import time
+import urllib.parse
 from pathlib import Path
 
 import requests
@@ -24,31 +25,30 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# Cloudflare Workers AI REST endpoint for the FLUX.1-schnell text-to-image model.
-MODEL = "@cf/black-forest-labs/flux-1-schnell"
-API_URL = (
-    "https://api.cloudflare.com/client/v4/accounts/"
-    "{account_id}/ai/run/" + MODEL
-)
+# Pollinations text-to-image endpoint. The prompt goes in the URL path; the
+# render options are query parameters.
+API_BASE = "https://image.pollinations.ai/prompt/"
+MODEL = "flux"
 
-REQUEST_TIMEOUT = 60  # seconds
-DELAY_BETWEEN_REQUESTS = 2  # seconds, to stay polite under the free tier
+# Native portrait frame, so the assembler doesn't have to crop away half the image.
+IMAGE_WIDTH = 1080
+IMAGE_HEIGHT = 1920
+
+REQUEST_TIMEOUT = 120  # seconds — Pollinations renders on demand and can queue.
+DELAY_BETWEEN_REQUESTS = 3  # seconds, polite spacing under the free anonymous tier.
 MAX_RETRIES = 3
-# schnell supports 1-8 diffusion steps; 8 is the max quality the model allows.
-STEPS = 8
-# flux-1-schnell rejects any prompt longer than this with HTTP 400
-# ("Length of '/prompt' must be <= 2048"). Gemini occasionally writes a longer
-# prompt for a single scene, so we cap before sending.
-MAX_PROMPT_CHARS = 2048
+# Keep prompts to a sane length so the request URL stays well within proxy limits.
+MAX_PROMPT_CHARS = 2000
+
+# JPEG (FFD8FF) and PNG (\x89PNG...) magic numbers — used to confirm we received
+# an actual image rather than an HTML/JSON error page served with a 200.
+_IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n")
 
 
 def _truncate_prompt(prompt: str) -> str:
     """
-    Cap a prompt at Cloudflare's 2048-character limit.
-
-    Trims back to the last word boundary so we don't cut mid-word, and strips any
-    trailing separators left behind. Returns the prompt unchanged if it already
-    fits.
+    Cap a prompt at MAX_PROMPT_CHARS, trimming back to the last word boundary so
+    we don't cut mid-word. Returns the prompt unchanged if it already fits.
     """
     if len(prompt) <= MAX_PROMPT_CHARS:
         return prompt
@@ -59,103 +59,67 @@ def _truncate_prompt(prompt: str) -> str:
     return truncated.rstrip(" ,;")
 
 
-def _cloudflare_error_detail(resp: requests.Response) -> str:
-    """
-    Extract a human-readable reason from a non-2xx Cloudflare response.
-
-    Cloudflare returns {"errors": [{"message": "...", "code": ...}], ...} on
-    failure. Fall back to the raw (truncated) body if it isn't the expected JSON.
-    """
-    try:
-        errors = resp.json().get("errors")
-        if errors:
-            return "; ".join(e.get("message", str(e)) for e in errors)
-    except ValueError:
-        pass
-    return resp.text[:300]
+def _looks_like_image(content: bytes) -> bool:
+    """True if the bytes begin with a known image magic number."""
+    return content.startswith(_IMAGE_MAGIC)
 
 
 def _download_one(prompt: str, dest: Path) -> None:
     """
-    Generate a single image with Cloudflare FLUX.1-schnell and save it to `dest`.
+    Generate a single image with Pollinations and save it to `dest`.
 
     Inputs:
         prompt:  the image prompt text.
-        dest:    pathlib.Path where the JPG should be written.
+        dest:    pathlib.Path where the image should be written.
     Output:  None.
     Raises:
-        RuntimeError on a fatal auth/config error (no retry), or after all retry
-        attempts are exhausted for transient errors.
+        RuntimeError after all retry attempts are exhausted for transient errors.
     """
-    url = API_URL.format(account_id=config.CLOUDFLARE_ACCOUNT_ID)
-    headers = {
-        "Authorization": f"Bearer {config.CLOUDFLARE_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
     if len(prompt) > MAX_PROMPT_CHARS:
         logger.warning(
-            "Prompt for %s is %d chars; truncating to Cloudflare's %d-char limit",
+            "Prompt for %s is %d chars; truncating to %d to keep the URL sane",
             dest.name,
             len(prompt),
             MAX_PROMPT_CHARS,
         )
         prompt = _truncate_prompt(prompt)
 
-    payload = {"prompt": prompt, "steps": STEPS}
+    url = API_BASE + urllib.parse.quote(prompt, safe="")
+    params = {
+        "width": IMAGE_WIDTH,
+        "height": IMAGE_HEIGHT,
+        "model": MODEL,
+        "nologo": "true",
+        # A fresh seed per call avoids any chance of a cached/identical render.
+        "seed": random.randint(1, 1_000_000),
+    }
+    # The token is optional — Pollinations works anonymously. When present it
+    # raises rate limits and guarantees no-logo output on the newer tiers.
+    headers = {}
+    if config.POLLINATIONS_API_TOKEN:
+        headers["Authorization"] = f"Bearer {config.POLLINATIONS_API_TOKEN}"
 
     last_error: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             logger.debug("Requesting image (attempt %d): %s", attempt, dest.name)
-            resp = requests.post(
-                url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT
+            resp = requests.get(
+                url, params=params, headers=headers, timeout=REQUEST_TIMEOUT
             )
-
-            # Auth/permission failures are config problems, not transient — fail
-            # fast with an actionable message instead of burning retries.
-            if resp.status_code in (401, 403):
-                raise RuntimeError(
-                    "Cloudflare rejected the request "
-                    f"(HTTP {resp.status_code}). Check that CLOUDFLARE_ACCOUNT_ID "
-                    "and CLOUDFLARE_API_TOKEN are correct and the token has the "
-                    "'Workers AI' permission."
-                )
-
-            # A 400 is a deterministic bad-request (e.g. a rejected prompt) — it
-            # will never succeed on retry, so surface Cloudflare's own reason and
-            # fail fast instead of burning three attempts.
-            if resp.status_code == 400:
-                raise RuntimeError(
-                    f"Cloudflare rejected the prompt for {dest.name} (HTTP 400): "
-                    f"{_cloudflare_error_detail(resp)}"
-                )
-
-            # A 429 is usually the daily free-neuron allocation being exhausted,
-            # which won't recover until it resets at 00:00 UTC — retrying within a
-            # run is pointless and the bare status hides the real reason. Surface
-            # Cloudflare's message and fail fast in that case. (A rare per-minute
-            # burst 429 falls through to raise_for_status() and is retried.)
-            if resp.status_code == 429:
-                detail = _cloudflare_error_detail(resp)
-                if "neuron" in detail.lower() or "daily" in detail.lower():
-                    raise RuntimeError(
-                        f"Cloudflare Workers AI daily free quota exhausted while "
-                        f"generating {dest.name}: {detail} The free allowance resets "
-                        "at 00:00 UTC. Rerun after the reset, lower STEPS/scene count "
-                        "to spend fewer neurons per run, or upgrade to the Workers "
-                        "Paid plan."
-                    )
-
             resp.raise_for_status()
-            image_bytes = _extract_image_bytes(resp)
-            dest.write_bytes(image_bytes)
-            logger.info("Saved %s (%d bytes)", dest.name, len(image_bytes))
+
+            content = resp.content
+            if not _looks_like_image(content):
+                # Pollinations occasionally returns an HTML/JSON error with a 200.
+                raise ValueError(
+                    "response was not an image "
+                    f"(content-type={resp.headers.get('Content-Type')!r}, "
+                    f"{len(content)} bytes): {content[:200]!r}"
+                )
+
+            dest.write_bytes(content)
+            logger.info("Saved %s (%d bytes)", dest.name, len(content))
             return
-        except RuntimeError:
-            # Fatal (auth/config) errors are raised as RuntimeError above — don't
-            # retry them, let them propagate immediately.
-            raise
         except Exception as exc:  # noqa: BLE001 - retry on any network/IO error
             last_error = exc
             backoff = 2 ** attempt  # exponential: 2s, 4s, 8s
@@ -171,39 +135,6 @@ def _download_one(prompt: str, dest: Path) -> None:
                 time.sleep(backoff)
 
     raise RuntimeError(f"Failed to generate image {dest.name}: {last_error}")
-
-
-def _extract_image_bytes(resp: requests.Response) -> bytes:
-    """
-    Pull the decoded image bytes out of a Cloudflare Workers AI JSON response.
-
-    FLUX.1-schnell responds with:
-        {"result": {"image": "<base64 jpeg>"}, "success": true, ...}
-
-    Inputs:  resp - the requests.Response from the Workers AI endpoint.
-    Output:  raw JPEG bytes.
-    Raises:  ValueError if the envelope is malformed or the image is empty.
-    """
-    try:
-        body = resp.json()
-    except ValueError as exc:
-        raise ValueError(f"Cloudflare response was not JSON: {exc}") from exc
-
-    if not body.get("success", False):
-        raise ValueError(f"Cloudflare reported failure: {body.get('errors')}")
-
-    b64 = (body.get("result") or {}).get("image")
-    if not b64:
-        raise ValueError("Cloudflare response contained no image data")
-
-    try:
-        image_bytes = base64.b64decode(b64)
-    except (binascii.Error, ValueError) as exc:
-        raise ValueError(f"Could not base64-decode image: {exc}") from exc
-
-    if not image_bytes:
-        raise ValueError("Decoded image was empty")
-    return image_bytes
 
 
 def generate_images(scenes: list[dict]) -> list[Path]:
