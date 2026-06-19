@@ -131,6 +131,22 @@ def _download_one(prompt: str, dest: Path) -> None:
                     f"{_cloudflare_error_detail(resp)}"
                 )
 
+            # A 429 is usually the daily free-neuron allocation being exhausted,
+            # which won't recover until it resets at 00:00 UTC — retrying within a
+            # run is pointless and the bare status hides the real reason. Surface
+            # Cloudflare's message and fail fast in that case. (A rare per-minute
+            # burst 429 falls through to raise_for_status() and is retried.)
+            if resp.status_code == 429:
+                detail = _cloudflare_error_detail(resp)
+                if "neuron" in detail.lower() or "daily" in detail.lower():
+                    raise RuntimeError(
+                        f"Cloudflare Workers AI daily free quota exhausted while "
+                        f"generating {dest.name}: {detail} The free allowance resets "
+                        "at 00:00 UTC. Rerun after the reset, lower STEPS/scene count "
+                        "to spend fewer neurons per run, or upgrade to the Workers "
+                        "Paid plan."
+                    )
+
             resp.raise_for_status()
             image_bytes = _extract_image_bytes(resp)
             dest.write_bytes(image_bytes)
