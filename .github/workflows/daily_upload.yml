@@ -2,7 +2,7 @@ name: Daily mythology short
 
 on:
   schedule:
-    - cron: "0 5 * * 0" # weekly, Sundays at 05:00 UTC (true 7-day cycle)
+    - cron: "15 */5 * * *" 
   workflow_dispatch: # also allow manual trigger from GitHub UI
     inputs:
       topic:
